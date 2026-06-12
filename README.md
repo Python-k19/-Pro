@@ -1,5 +1,14 @@
 <div align="center">
 
+![Latest Release](https://img.shields.io/github/v/release/ТВОЙ_НИК/NeuroTTS-Pro?style=for-the-badge&color=brightgreen&label=Latest%20Release)
+![Release Date](https://img.shields.io/github/release-date/ТВОЙ_НИК/NeuroTTS-Pro?style=for-the-badge&color=blue)
+![Downloads](https://img.shields.io/github/downloads/ТВОЙ_НИК/NeuroTTS-Pro/total?style=for-the-badge&color=orange&label=Total%20Downloads)
+![Latest Downloads](https://img.shields.io/github/downloads/ТВОЙ_НИК/NeuroTTS-Pro/latest/total?style=for-the-badge&color=purple)
+
+</div>
+
+<div align="center">
+
 # 🎙️ Нейро-Озвучка Pro
 
 ### Профессиональный Text-to-Speech инструмент на Python
