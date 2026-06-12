@@ -1,24 +1,16 @@
 <div align="center">
 
-![Latest Release](https://img.shields.io/github/v/release/ТВОЙ_НИК/NeuroTTS-Pro?style=for-the-badge&color=brightgreen&label=Latest%20Release)
-![Release Date](https://img.shields.io/github/release-date/ТВОЙ_НИК/NeuroTTS-Pro?style=for-the-badge&color=blue)
-![Downloads](https://img.shields.io/github/downloads/ТВОЙ_НИК/NeuroTTS-Pro/total?style=for-the-badge&color=orange&label=Total%20Downloads)
-![Latest Downloads](https://img.shields.io/github/downloads/ТВОЙ_НИК/NeuroTTS-Pro/latest/total?style=for-the-badge&color=purple)
-
-</div>
-
-<div align="center">
-
 # 🎙️ Нейро-Озвучка Pro
 
 ### Профессиональный Text-to-Speech инструмент на Python
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=for-the-badge&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.2-orange?style=for-the-badge)](#-changelog)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge)](#-installation)
+[![Version](https://img.shields.io/badge/Version-3.2%20Admin%20Mode-orange?style=for-the-badge)](#-релизы-и-история-версий)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge)](#-установка)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-8.1.1%20Hoare-007808?style=for-the-badge&logo=ffmpeg)](https://ffmpeg.org)
 
-**[Особенности](#-особенности)** • **[Установка](#-установка)** • **[Использование](#-использование)** • **[Документация](#-документация)** • **[Автор](#-автор)**
+**[⬇️ Скачать .exe](https://github.com/Python-k19/-Pro/releases/tag/НейроОзвучкаPro)** • **[Особенности](#-особенности)** • **[Установка](#-установка)** • **[Документация](#-документация)** • **[Автор](#-автор)**
 
 *code by ТЕХНОПРАНК*
 
@@ -30,7 +22,7 @@
 
 **Нейро-Озвучка Pro** — это мощное desktop-приложение для преобразования текста в естественную речь с использованием нейросетевых голосов Microsoft Azure. Программа создана для контент-мейкеров, студентов, писателей и всех, кому нужна качественная озвучка текстов.
 
-> 💡 **Главная фишка:** Профессиональное качество звука, параллельная генерация, умная склейка через FFmpeg и 5 пресетов обработки — всё в одном окне.
+> 💡 **Главная фишка:** Профессиональное качество звука, параллельная генерация, умная склейка через FFmpeg 8.1.1 и 5 пресетов обработки — всё в одном окне. Программа сама установит все зависимости и FFmpeg при первом запуске!
 
 ![Demo](https://via.placeholder.com/800x400/1a1a2e/00d4ff?text=NeuroTTS+Pro+Demo)
 
@@ -44,7 +36,7 @@
 |---------|----------|
 | 🗣️ **Нейросетевые голоса** | Доступ к премиальным голосам Microsoft Azure |
 | ⚡ **Параллельная генерация** | Ускорение в 3-5 раз через `asyncio.gather` |
-| 🔗 **Быстрая склейка** | FFmpeg concat без перекодирования (в 40 раз быстрее) |
+| 🔗 **Быстрая склейка** | FFmpeg 8.1.1 concat без перекодирования (в 40 раз быстрее) |
 | 🎛️ **5 пресетов звука** | Чистый, Радио, Подкаст, Эпичный, Глубокий бас |
 | 🎚️ **Аудио-эффекты** | Нормализация, компрессия, high/low-pass фильтры |
 | 🎵 **Встроенный плеер** | Pygame с паузой и остановкой |
