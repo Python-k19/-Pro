@@ -538,7 +538,7 @@ class SelfDiagnostics:
         except TypeError:
             communicate = edge_tts.Communicate(text, voice)
 
-        await communicate.save(output_file)
+        await asyncio.wait_for(communicate.save(output_file), timeout=TTS_CHUNK_TIMEOUT)
 
     @classmethod
     def test_edge_tts_service(cls, retries=3):
@@ -714,7 +714,7 @@ class SelfDiagnostics:
                 except TypeError:
                     communicate = edge_tts.Communicate(text, voice)
 
-                await communicate.save(output_file)
+                await asyncio.wait_for(communicate.save(output_file), timeout=TTS_CHUNK_TIMEOUT)
 
                 if not _sd_os.path.exists(output_file):
                     raise RuntimeError("Файл не создан после generate.save()")
@@ -1073,6 +1073,206 @@ class DependencyInstaller(ctk.CTk):
         app = VoiceGeneratorApp()
         app.mainloop()
 
+
+# === TTS NO-AUDIO FIX START ===
+import re as _ta_re
+import importlib as _ta_il
+from datetime import datetime as _ta_dt
+
+TTS_MAX_CONCURRENCY = int(os.environ.get("TTS_MAX_CONCURRENCY", "4"))
+TTS_CHUNK_TIMEOUT   = float(os.environ.get("TTS_CHUNK_TIMEOUT",   "60"))
+TTS_CHUNK_RETRIES   = int(os.environ.get("TTS_CHUNK_RETRIES",     "2"))
+TTS_TOTAL_TIMEOUT   = float(os.environ.get("TTS_TOTAL_TIMEOUT",   "1200"))
+TTS_SPLIT_MIN       = int(os.environ.get("TTS_SPLIT_MIN",         "400"))
+
+try:
+    _TA_LOG = Path(__file__).with_name("tts_diagnostics.log")
+except NameError:
+    _TA_LOG = Path("tts_diagnostics.log")
+
+
+def _tts_log(msg):
+    try:
+        line = f"[{_ta_dt.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        _TA_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_TA_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        print(line)
+    except Exception:
+        try:
+            print(msg)
+        except Exception:
+            pass
+
+
+def _tts_winflags():
+    return {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
+
+def _tts_sanitize(s):
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in "\n\t":
+            out.append(ch); continue
+        if o < 32:
+            continue
+        if 0xD800 <= o <= 0xDFFF:      # суррогаты
+            continue
+        if o > 0xFFFF:                 # не-BMP = большинство эмодзи
+            continue
+        out.append(ch)
+    s = "".join(out)
+    s = _ta_re.sub(r"[ \t]{2,}", " ", s)
+    s = _ta_re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def _tts_refresh_edge():
+    _tts_log("refresh: pip install -U edge-tts ...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "--no-cache-dir", "edge-tts"],
+            capture_output=True, timeout=300, **_tts_winflags(),
+        )
+    except Exception as e:
+        _tts_log(f"refresh pip fail: {e}")
+    try:
+        import edge_tts
+        _ta_il.reload(edge_tts)
+        _tts_log("refresh: edge-tts reloaded")
+    except Exception as e:
+        _tts_log(f"refresh reload fail: {e}")
+
+
+async def _tts_try_save_async(text, voice, out, timeout, retries):
+    import edge_tts
+    last = None
+    for a in range(1, max(1, retries) + 1):
+        try:
+            try:
+                c = edge_tts.Communicate(text=text, voice=voice)
+            except TypeError:
+                c = edge_tts.Communicate(text, voice)
+            await asyncio.wait_for(c.save(out), timeout=timeout)
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                return
+            raise RuntimeError("empty file")
+        except Exception as e:
+            last = e
+            if a < retries:
+                await asyncio.sleep(min(2 ** a, 8))
+    raise last
+
+
+def _tts_concat_files(files, out):
+    listf = os.path.join(tempfile.gettempdir(), f"ta_cat_{os.getpid()}_{abs(hash(tuple(files)))}.txt")
+    try:
+        with open(listf, "w", encoding="utf-8") as f:
+            for p in files:
+                f.write("file '" + p.replace("\\", "/").replace("'", "'\\''") + "'\n")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", listf, "-c", "copy", out],
+            check=True, capture_output=True, timeout=120, **_tts_winflags(),
+        )
+    finally:
+        try:
+            os.remove(listf)
+        except Exception:
+            pass
+
+
+def _tts_split_half(s):
+    n = len(s) // 2
+    for delta in range(0, min(300, max(1, n))):
+        for cand in (n - delta, n + delta):
+            if 0 < cand < len(s) and s[cand] in " \n.!?":
+                cut = cand + 1
+                return s[:cut].strip(), s[cut:].strip()
+    return s[:n].strip(), s[n:].strip()
+
+
+def _tts_pick_alt_voice(self, cur):
+    try:
+        vals = list(self.voices.values())
+    except Exception:
+        return None
+    for v in vals:
+        if v != cur:
+            return v
+    return None
+
+
+async def _tts_generate_chunk_safe(self, text, voice, output_file, index, total, depth=0):
+    tag = f"чанк {index + 1}/{total}"
+    if not text or not text.strip():
+        _tts_log(f"{tag}: пустой -> пропуск (без обращения к сервису)")
+        return
+    clean = _tts_sanitize(text)
+    if not clean.strip():
+        _tts_log(f"{tag}: после санитизации пуст -> пропуск")
+        return
+
+    last = None
+
+    # A) обычный retry
+    try:
+        await _tts_try_save_async(clean, voice, output_file, TTS_CHUNK_TIMEOUT, TTS_CHUNK_RETRIES)
+        _tts_log(f"{tag}: OK стратегия=A(raw)")
+        return
+    except Exception as e:
+        last = e
+        _tts_log(f"{tag}: A(raw) fail: {e}")
+
+    # B) резервный голос
+    try:
+        alt = _tts_pick_alt_voice(self, voice)
+        if alt and alt != voice:
+            await _tts_try_save_async(clean, alt, output_file, TTS_CHUNK_TIMEOUT, 1)
+            _tts_log(f"{tag}: OK стратегия=B(altvoice={alt})")
+            return
+    except Exception as e:
+        last = e
+        _tts_log(f"{tag}: B(altvoice) fail: {e}")
+
+    # C) обновить edge-tts и повтор (лечит DRM/Sec-MS-GEC смену сервиса)
+    try:
+        _tts_refresh_edge()
+        await _tts_try_save_async(clean, voice, output_file, TTS_CHUNK_TIMEOUT + 30, 1)
+        _tts_log(f"{tag}: OK стратегия=C(refresh)")
+        return
+    except Exception as e:
+        last = e
+        _tts_log(f"{tag}: C(refresh) fail: {e}")
+
+    # D) рекурсивное деление (лечит эмодзи/битые/слишком плотные куски)
+    if depth < 2 and len(clean) >= TTS_SPLIT_MIN:
+        try:
+            left, right = _tts_split_half(clean)
+            if left and right:
+                d = tempfile.mkdtemp(prefix="ta_split_")
+                p1 = os.path.join(d, "a.mp3")
+                p2 = os.path.join(d, "b.mp3")
+                try:
+                    await _tts_generate_chunk_safe(self, left,  voice, p1, index, total, depth + 1)
+                    await _tts_generate_chunk_safe(self, right, voice, p2, index, total, depth + 1)
+                    parts = [p for p in (p1, p2) if os.path.exists(p) and os.path.getsize(p) > 0]
+                    if not parts:
+                        raise RuntimeError("split: обе половины пусты")
+                    if len(parts) == 1:
+                        shutil.copy2(parts[0], output_file)
+                    else:
+                        _tts_concat_files(parts, output_file)
+                    _tts_log(f"{tag}: OK стратегия=D(split depth={depth + 1})")
+                    return
+                finally:
+                    shutil.rmtree(d, ignore_errors=True)
+        except Exception as e:
+            last = e
+            _tts_log(f"{tag}: D(split) fail: {e}")
+
+    raise RuntimeError(f"{tag}: {last}")
+# === TTS NO-AUDIO FIX END ===
 
 class VoiceGeneratorApp(ctk.CTk):
     def __init__(self):
@@ -1463,13 +1663,44 @@ class VoiceGeneratorApp(ctk.CTk):
             self.after(0, lambda: self._update_progress(0, total, "Параллельная генерация запущена..."))
 
             async def generate_all_chunks():
-                tasks = []
-                for i, chunk in enumerate(chunks):
-                    temp_file = os.path.join(temp_dir, f"chunk_{i}.mp3")
-                    task = self._generate_chunk_async(chunk, voice, temp_file, i, total)
-                    tasks.append(task)
-                return await asyncio.gather(*tasks)
+                sem = asyncio.Semaphore(TTS_MAX_CONCURRENCY)
+                files = [os.path.join(temp_dir, f"chunk_{i}.mp3") for i in range(total)]
+                async def worker(i, chunk):
+                    async with sem:
+                        await self._generate_chunk_async(chunk, voice, files[i], i, total)
+                tasks = [asyncio.create_task(worker(i, c)) for i, c in enumerate(chunks)]
 
+                async def _watchdog():
+                    try:
+                        await asyncio.sleep(TTS_TOTAL_TIMEOUT)
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                    except asyncio.CancelledError:
+                        pass
+                wd = asyncio.create_task(_watchdog())
+
+                done, errs = 0, []
+                try:
+                    for fut in asyncio.as_completed(tasks):
+                        try:
+                            await fut
+                        except asyncio.CancelledError as e:
+                            errs.append(RuntimeError(f"чанк отменён по общему таймауту: {e}"))
+                        except Exception as e:
+                            errs.append(e)
+                        done += 1
+                        self.after(0, lambda d=done: self._update_progress(
+                            d, total, f"Генерация {d}/{total}..."))
+                finally:
+                    wd.cancel()
+                    try:
+                        await wd
+                    except Exception:
+                        pass
+                if errs:
+                    raise RuntimeError("Не сгенерированы чанки: " + "; ".join(str(e) for e in errs[:3]))
+                return files
             asyncio.run(generate_all_chunks())
 
             mp3_files = []
@@ -1500,16 +1731,9 @@ class VoiceGeneratorApp(ctk.CTk):
         except Exception as e:
             self.after(0, lambda: self._finish(f"Ошибка: {str(e)}", error=True))
 
-    async def _generate_chunk_async(self, text: str, voice: str, output_file: str, index: int, total: int):
-        """Асинхронная генерация одного чанка"""
-        import edge_tts
-        
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(output_file)
-        self.after(0, lambda x=index: self._update_progress(
-            x + 1, total, f"Генерация {x + 1}/{total}..."
-        ))
-
+    async def _generate_chunk_async(self, text, voice, output_file, index, total):
+        """Делегат в каскад лечения NoAudioReceived (см. _tts_generate_chunk_safe)."""
+        await _tts_generate_chunk_safe(self, text, voice, output_file, index, total, depth=0)
     def _play_audio(self):
         """Воспроизведение аудио"""
         if not self.current_audio_path or not os.path.exists(self.current_audio_path):
@@ -1614,13 +1838,44 @@ class VoiceGeneratorApp(ctk.CTk):
             self.after(0, lambda: self._update_progress(0, total, "Параллельная генерация запущена..."))
 
             async def generate_all_chunks():
-                tasks = []
-                for i, chunk in enumerate(chunks):
-                    temp_file = os.path.join(temp_dir, f"chunk_{i}.mp3")
-                    task = self._generate_chunk_async(chunk, voice, temp_file, i, total)
-                    tasks.append(task)
-                return await asyncio.gather(*tasks)
+                sem = asyncio.Semaphore(TTS_MAX_CONCURRENCY)
+                files = [os.path.join(temp_dir, f"chunk_{i}.mp3") for i in range(total)]
+                async def worker(i, chunk):
+                    async with sem:
+                        await self._generate_chunk_async(chunk, voice, files[i], i, total)
+                tasks = [asyncio.create_task(worker(i, c)) for i, c in enumerate(chunks)]
 
+                async def _watchdog():
+                    try:
+                        await asyncio.sleep(TTS_TOTAL_TIMEOUT)
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                    except asyncio.CancelledError:
+                        pass
+                wd = asyncio.create_task(_watchdog())
+
+                done, errs = 0, []
+                try:
+                    for fut in asyncio.as_completed(tasks):
+                        try:
+                            await fut
+                        except asyncio.CancelledError as e:
+                            errs.append(RuntimeError(f"чанк отменён по общему таймауту: {e}"))
+                        except Exception as e:
+                            errs.append(e)
+                        done += 1
+                        self.after(0, lambda d=done: self._update_progress(
+                            d, total, f"Генерация {d}/{total}..."))
+                finally:
+                    wd.cancel()
+                    try:
+                        await wd
+                    except Exception:
+                        pass
+                if errs:
+                    raise RuntimeError("Не сгенерированы чанки: " + "; ".join(str(e) for e in errs[:3]))
+                return files
             asyncio.run(generate_all_chunks())
 
             mp3_files = []
@@ -1713,22 +1968,7 @@ class VoiceGeneratorApp(ctk.CTk):
 
 
 def _apply_self_diagnostic_patches():
-    try:
-        if "VoiceGeneratorApp" in globals():
-            VoiceGeneratorApp._load_voices = SelfDiagnostics.patched_load_voices
-            VoiceGeneratorApp._generate_chunk_async = SelfDiagnostics.patched_generate_chunk_async
-
-        if "DependencyInstaller" in globals():
-            DependencyInstaller._install_ffmpeg_windows = SelfDiagnostics.patched_install_ffmpeg_windows
-
-        SelfDiagnostics.log("Runtime self-diagnostic patches applied.")
-    except Exception as e:
-        try:
-            SelfDiagnostics.log(f"Failed to apply runtime patches: {e}")
-        except Exception:
-            print(f"Failed to apply runtime patches: {e}")
-
-
+    pass
 if __name__ == "__main__":
     try:
         SelfDiagnostics.run_startup_diagnostics()
