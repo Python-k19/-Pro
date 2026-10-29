@@ -40,7 +40,7 @@ def run_as_admin():
             params = ' '.join([f'"{arg}"' for arg in sys.argv[1:]])
             
             ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, f'"{script}" {params}', None, 1
+                None, "runas", _hc_gui_executable(), f'"{script}" {params}', None, 1
             )
             
             # ShellExecuteW возвращает > 32 при успехе
@@ -51,12 +51,163 @@ def run_as_admin():
         else:
             # Linux/macOS: используем sudo
             script = os.path.abspath(sys.argv[0])
-            subprocess.check_call(['sudo', sys.executable, script] + sys.argv[1:])
+            subprocess.check_call(['sudo', sys.executable, script] + sys.argv[1:], **_hc_no_window_flags())
             sys.exit(0)
     except Exception as e:
         print(f"Не удалось получить права администратора: {e}")
         return False
 
+
+# === HIDE CONSOLE PATCH START ===
+import os as _hc_os
+import shutil as _hc_shutil
+import subprocess as _hc_subprocess
+import sys as _hc_sys
+from pathlib import Path as _hc_Path
+
+HIDE_CONSOLE_PATCH_VERSION = "2026.10.29-1"
+
+
+def _hc_is_windows():
+    return _hc_sys.platform == "win32"
+
+
+def _hc_find_pythonw():
+    """
+    Ищет pythonw.exe рядом с текущим python.exe или в PATH.
+    """
+    if not _hc_is_windows():
+        return None
+
+    try:
+        exe = _hc_Path(_hc_sys.executable)
+    except Exception:
+        return None
+
+    if exe.name.lower() == "pythonw.exe":
+        return exe
+
+    if exe.name.lower() == "python.exe":
+        candidate = exe.with_name("pythonw.exe")
+        if candidate.exists():
+            return candidate
+
+    which = _hc_shutil.which("pythonw.exe")
+    if which:
+        try:
+            return _hc_Path(which)
+        except Exception:
+            return None
+
+    return None
+
+
+def _hc_gui_executable():
+    """
+    Возвращает pythonw.exe, если мы на Windows и он доступен.
+    Используется для повышения прав, чтобы UAC-перезапуск не открывал консоль.
+    """
+    pythonw = _hc_find_pythonw()
+    if pythonw:
+        return str(pythonw)
+    return _hc_sys.executable
+
+
+def _hc_no_window_flags():
+    """
+    Флаги для subprocess, чтобы дочерние консольные процессы не открывали чёрное окно.
+    """
+    if not _hc_is_windows():
+        return {}
+
+    create_no_window = getattr(_hc_subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return {"creationflags": create_no_window}
+
+
+def _hc_relaunch_without_console():
+    """
+    Если программа запущена через python.exe на Windows, перезапускает себя через pythonw.exe.
+    Это убирает основное чёрное окно.
+
+    Важно:
+    - если запускать именно textToVoice.py двойным кликом через python.exe,
+      микро-вспышка консоли старого процесса всё равно возможна;
+    - чтобы гарантированно не было вспышки, лучше запускать .pyw / pythonw / VBS-ярлык.
+    """
+    if not _hc_is_windows():
+        return False
+
+    # Позволяет принудительно показать консоль для отладки:
+    # set TTS_SHOW_CONSOLE=1
+    if _hc_os.environ.get("TTS_SHOW_CONSOLE") == "1":
+        return False
+
+    # Не трогаем собраные через PyInstaller/cx_Freeze и подобные.
+    if getattr(_hc_sys, "frozen", False):
+        return False
+
+    # Защита от цикла перезапуска.
+    if _hc_os.environ.get("TTS_NO_CONSOLE_RELAUNCH") == "1":
+        return False
+
+    try:
+        exe = _hc_Path(_hc_sys.executable)
+    except Exception:
+        return False
+
+    # Уже pythonw — ничего не делаем.
+    if exe.name.lower() != "python.exe":
+        return False
+
+    pythonw = exe.with_name("pythonw.exe")
+    if not pythonw.exists():
+        which = _hc_shutil.which("pythonw.exe")
+        if not which:
+            return False
+        pythonw = _hc_Path(which)
+
+    try:
+        script = _hc_Path(_hc_sys.argv[0]).resolve()
+    except Exception:
+        return False
+
+    if not script.exists():
+        return False
+
+    env = _hc_os.environ.copy()
+    env["TTS_NO_CONSOLE_RELAUNCH"] = "1"
+
+    cmd = [str(pythonw), str(script)] + _hc_sys.argv[1:]
+
+    try:
+        # DETACHED_PROCESS помогает не наследовать консоль родительского процесса.
+        detached_process = getattr(_hc_subprocess, "DETACHED_PROCESS", 0x00000008)
+
+        _hc_subprocess.Popen(
+            cmd,
+            env=env,
+            cwd=str(script.parent),
+            close_fds=True,
+            creationflags=detached_process,
+        )
+
+        _hc_sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        return False
+
+    return True
+
+
+# Автоматически прячем консоль при импорте/запуске файла.
+try:
+    _hc_relaunch_without_console()
+except SystemExit:
+    raise
+except Exception:
+    pass
+# === HIDE CONSOLE PATCH END ===
 
 # Проверяем права при запуске
 if not is_admin():
@@ -84,6 +235,609 @@ REQUIRED_PACKAGES = [
     'mutagen'
 ]
 
+
+# === SELF-DIAGNOSTICS PATCH START ===
+import asyncio as _sd_asyncio
+import importlib as _sd_importlib
+import importlib.metadata as _sd_metadata
+import os as _sd_os
+import re as _sd_re
+import shutil as _sd_shutil
+import socket as _sd_socket
+import ssl as _sd_ssl
+import subprocess as _sd_subprocess
+import sys as _sd_sys
+import tempfile as _sd_tempfile
+import time as _sd_time
+import traceback as _sd_traceback
+from datetime import datetime as _sd_datetime
+from pathlib import Path as _sd_Path
+
+SELF_DIAG_PATCH_VERSION = "2026.10.29-1"
+
+try:
+    SD_LOG_FILE = _sd_Path(__file__).with_name("tts_diagnostics.log")
+except NameError:
+    SD_LOG_FILE = _sd_Path("tts_diagnostics.log")
+
+
+class SelfDiagnostics:
+    """
+    Самодиагностика и самолечение для Нейро-Озвучка Pro.
+    """
+
+    CORE_PACKAGES = [
+        "edge-tts",
+        "pydub",
+        "mutagen",
+        "customtkinter",
+        "pygame",
+    ]
+
+    MIN_VERSIONS = {
+        "edge-tts": "7.0.0",
+        "pydub": "0.25.1",
+        "mutagen": "1.47.0",
+        "customtkinter": "5.2.0",
+        "pygame": "2.5.0",
+    }
+
+    UPDATED_PACKAGES = []
+    RESTART_REQUIRED = False
+
+    EDGE_UPDATE_KEYWORDS = (
+        "401",
+        "403",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "unauthorized",
+        "forbidden",
+        "drm",
+        "token",
+        "sec-ms-gec",
+        "websocket",
+        "web socket",
+        "handshake",
+        "connection reset",
+        "connection aborted",
+        "server disconnected",
+        "noaudioreceived",
+        "no audio received",
+        "empty",
+        "invalid response",
+        "too many requests",
+        "internal server error",
+        "service unavailable",
+        "gateway",
+        "ssl",
+        "certificate",
+        "cannot connect",
+        "failed to receive audio",
+        "synthesis",
+        "speech",
+        "edge",
+        "microsoft",
+        "status code",
+        "status=",
+        "http 4",
+        "http 5",
+    )
+
+    @classmethod
+    def log(cls, message):
+        try:
+            line = f"[{_sd_datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+            SD_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(SD_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            print(line)
+        except Exception:
+            try:
+                print(message)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _module_name(pkg):
+        return pkg.replace("-", "_")
+
+    @staticmethod
+    def _version_tuple(version):
+        parts = []
+        for part in _sd_re.split(r"[.\-+]", str(version)):
+            if part.isdigit():
+                parts.append(int(part))
+            else:
+                m = _sd_re.match(r"(\d+)", part)
+                if m:
+                    parts.append(int(m.group(1)))
+                else:
+                    parts.append(0)
+        return tuple(parts) or (0,)
+
+    @classmethod
+    def get_installed_version(cls, pkg):
+        try:
+            return _sd_metadata.version(pkg)
+        except Exception:
+            return None
+
+    @classmethod
+    def is_package_installed(cls, pkg):
+        try:
+            _sd_importlib.import_module(cls._module_name(pkg))
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def needs_upgrade(cls, pkg):
+        ver = cls.get_installed_version(pkg)
+        if not ver:
+            return True
+
+        min_ver = cls.MIN_VERSIONS.get(pkg)
+        if not min_ver:
+            return False
+
+        try:
+            return cls._version_tuple(ver) < cls._version_tuple(min_ver)
+        except Exception:
+            return True
+
+    @classmethod
+    def pip_install(cls, pkg, upgrade=False):
+        base = [_sd_sys.executable, "-m", "pip", "install"]
+        if upgrade:
+            base.append("--upgrade")
+        base.extend(["--no-cache-dir", pkg])
+
+        variants = [
+            base,
+            base + ["--user"],
+            base + ["--break-system-packages"],
+            base + ["--user", "--break-system-packages"],
+        ]
+
+        for cmd in variants:
+            try:
+                cls.log("PIP: " + " ".join(cmd))
+                res = _sd_subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600, **_hc_no_window_flags()
+                )
+                if res.returncode == 0:
+                    cls.log(f"OK pip: {pkg}")
+                    return True
+
+                tail = (res.stderr or res.stdout or "")[-800:]
+                cls.log(f"PIP failed rc={res.returncode}: {tail}")
+            except Exception as e:
+                cls.log(f"PIP exception: {e}")
+
+        return False
+
+    @classmethod
+    def reload_module_if_loaded(cls, pkg):
+        mod_name = cls._module_name(pkg)
+        if mod_name in _sd_sys.modules:
+            try:
+                _sd_importlib.reload(_sd_sys.modules[mod_name])
+                cls.log(f"Reloaded module: {mod_name}")
+            except Exception as e:
+                cls.log(f"Reload failed {mod_name}: {e}")
+
+    @classmethod
+    def ensure_package(cls, pkg, upgrade_if_old=True, force=False):
+        installed = cls.is_package_installed(pkg)
+        need_install = not installed
+        need_upgrade = force or (installed and upgrade_if_old and cls.needs_upgrade(pkg))
+
+        if not need_install and not need_upgrade:
+            return False
+
+        action = "install" if need_install else "upgrade"
+        cls.log(
+            f"{action}: {pkg}; "
+            f"installed_version={cls.get_installed_version(pkg)}; "
+            f"min_version={cls.MIN_VERSIONS.get(pkg, '-')}"
+        )
+
+        ok = cls.pip_install(pkg, upgrade=(need_upgrade or not installed))
+        if ok:
+            cls.UPDATED_PACKAGES.append(pkg)
+
+            mod_name = cls._module_name(pkg)
+            if mod_name in _sd_sys.modules:
+                # Если обновили уже загруженный GUI-модуль, лучше перезапустить процесс.
+                if pkg in ("customtkinter", "pygame"):
+                    cls.RESTART_REQUIRED = True
+                else:
+                    cls.reload_module_if_loaded(pkg)
+
+        return ok
+
+    @classmethod
+    def ensure_core_packages(cls):
+        if _sd_os.environ.get("TTS_SKIP_PACKAGE_UPDATE") == "1":
+            cls.log("Package update skipped by TTS_SKIP_PACKAGE_UPDATE=1.")
+            return
+
+        auto_all = _sd_os.environ.get("TTS_AUTO_UPDATE_ALL") == "1"
+
+        for pkg in cls.CORE_PACKAGES:
+            # edge-tts обновляем активнее всего, потому что он зависит от внешнего сервиса.
+            upgrade_if_old = (pkg == "edge-tts") or auto_all
+            cls.ensure_package(pkg, upgrade_if_old=upgrade_if_old)
+
+    @classmethod
+    def restart_if_required(cls):
+        if not cls.RESTART_REQUIRED:
+            return False
+
+        if _sd_os.environ.get("TTS_NO_RESTART") == "1":
+            cls.log("Restart required, but disabled by TTS_NO_RESTART=1.")
+            return False
+
+        cls.log("Restarting application after updating loaded packages...")
+        try:
+            _sd_subprocess.Popen([_sd_sys.executable] + _sd_sys.argv, **_hc_no_window_flags())
+            _sd_sys.exit(0)
+        except Exception as e:
+            cls.log(f"Restart failed: {e}")
+
+        return True
+
+    @classmethod
+    def should_update_edge_tts(cls, error):
+        s = str(error).lower()
+        return any(keyword in s for keyword in cls.EDGE_UPDATE_KEYWORDS)
+
+    @classmethod
+    def update_edge_tts_force(cls):
+        cls.log("Force updating edge-tts...")
+        return cls.ensure_package("edge-tts", upgrade_if_old=True, force=True)
+
+    @classmethod
+    def test_network(cls):
+        hosts = [
+            ("speech.platform.bing.com", 443),
+            ("www.bing.com", 443),
+        ]
+
+        for host, port in hosts:
+            try:
+                _sd_socket.gethostbyname(host)
+                with _sd_socket.create_connection((host, port), timeout=5):
+                    pass
+                cls.log(f"Network OK: {host}:{port}")
+                return True
+            except Exception as e:
+                cls.log(f"Network fail {host}:{port}: {e}")
+
+        return False
+
+    @classmethod
+    async def _edge_list_voices(cls):
+        import edge_tts
+        return await edge_tts.list_voices()
+
+    @classmethod
+    async def _edge_generate_sample(cls, output_file, voice="ru-RU-DmitryNeural"):
+        import edge_tts
+
+        text = "Самопроверка синтеза речи."
+
+        try:
+            communicate = edge_tts.Communicate(text=text, voice=voice)
+        except TypeError:
+            communicate = edge_tts.Communicate(text, voice)
+
+        await communicate.save(output_file)
+
+    @classmethod
+    def test_edge_tts_service(cls, retries=3):
+        last_error = None
+
+        for attempt in range(retries):
+            temp_dir = _sd_tempfile.mkdtemp(prefix="tts_diag_")
+            sample = _sd_os.path.join(temp_dir, "sample.mp3")
+
+            try:
+                voices = _sd_asyncio.run(cls._edge_list_voices())
+                ru_voices = [
+                    v for v in voices
+                    if str(v.get("Locale", "")).startswith("ru-")
+                ]
+
+                voice = ru_voices[0]["ShortName"] if ru_voices else "ru-RU-DmitryNeural"
+
+                _sd_asyncio.run(cls._edge_generate_sample(sample, voice))
+
+                if _sd_os.path.exists(sample) and _sd_os.path.getsize(sample) > 1024:
+                    cls.log(
+                        "Edge-TTS OK: "
+                        f"russian_voices={len(ru_voices)}, "
+                        f"sample_bytes={_sd_os.path.getsize(sample)}"
+                    )
+                    return True, "OK"
+
+                raise RuntimeError("Edge-TTS вернул пустой или слишком маленький файл.")
+
+            except Exception as e:
+                last_error = e
+                cls.log(f"Edge-TTS attempt {attempt + 1}/{retries} failed: {e}")
+
+                if attempt < retries - 1:
+                    if cls.should_update_edge_tts(str(e)):
+                        cls.log("Error looks like Edge-TTS/service/API change. Updating edge-tts...")
+                        cls.update_edge_tts_force()
+                    else:
+                        _sd_time.sleep(1.5 * (attempt + 1))
+
+            finally:
+                try:
+                    _sd_shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+        msg = str(last_error) if last_error else "Unknown Edge-TTS error"
+        cls.log(f"Edge-TTS service test failed: {msg}")
+        return False, msg
+
+    @classmethod
+    def run_startup_diagnostics(cls):
+        if _sd_os.environ.get("TTS_SKIP_STARTUP_DIAGNOSTICS") == "1":
+            cls.log("Startup diagnostics skipped by TTS_SKIP_STARTUP_DIAGNOSTICS=1.")
+            return {"skipped": True}
+
+        cls.log(f"=== Self diagnostics {SELF_DIAG_PATCH_VERSION} ===")
+        cls.log(f"Python: {_sd_sys.version}")
+        cls.log(f"Platform: {_sd_sys.platform}")
+        cls.log(f"Executable: {_sd_sys.executable}")
+        cls.log(f"Script: {getattr(_sd_sys, 'argv', ['?'])[0]}")
+
+        report = {}
+
+        try:
+            cls.ensure_core_packages()
+
+            if cls.restart_if_required():
+                return {"restarted": True}
+
+            report["network"] = cls.test_network()
+
+            ok, msg = cls.test_edge_tts_service()
+            report["edge_tts_ok"] = ok
+            report["edge_tts_message"] = msg
+
+            if not ok:
+                cls.log(
+                    "WARNING: Edge-TTS self-test failed. "
+                    "Application will still start, but speech generation may fail. "
+                    f"Check {SD_LOG_FILE}"
+                )
+
+        except Exception as e:
+            report["error"] = str(e)
+            cls.log(f"Diagnostics exception: {e}")
+            cls.log(_sd_traceback.format_exc())
+
+        return report
+
+    @staticmethod
+    def patched_load_voices(self):
+        """
+        Безопасная загрузка русских голосов с retry и автообновлением edge-tts.
+        """
+        last_error = None
+
+        for attempt in range(3):
+            try:
+                import edge_tts
+
+                async def get_ru_voices():
+                    voices = await edge_tts.list_voices()
+                    return [
+                        v for v in voices
+                        if str(v.get("Locale", "")).startswith("ru-")
+                    ]
+
+                ru_voices = _sd_asyncio.run(get_ru_voices())
+
+                display_names = []
+                self.voices = {}
+
+                for v in ru_voices:
+                    name = f"{v['ShortName']} ({v['Gender']})"
+                    display_names.append(name)
+                    self.voices[name] = v["ShortName"]
+
+                self.after(
+                    0,
+                    lambda dn=display_names: self.voice_combo.configure(values=dn)
+                )
+                self.after(
+                    0,
+                    lambda dn=display_names: self.voice_combo.set(
+                        dn[0] if dn else "Нет голосов"
+                    )
+                )
+                self.after(
+                    0,
+                    lambda c=len(ru_voices): self.status_label.configure(
+                        text=f"Загружено {c} русских голосов",
+                        text_color="#32CD32"
+                    )
+                )
+
+                SelfDiagnostics.log(f"Voices loaded: {len(ru_voices)}")
+                return
+
+            except Exception as e:
+                last_error = e
+                SelfDiagnostics.log(f"Load voices attempt {attempt + 1}/3 failed: {e}")
+
+                if attempt < 2 and SelfDiagnostics.should_update_edge_tts(str(e)):
+                    SelfDiagnostics.update_edge_tts_force()
+                elif attempt < 2:
+                    _sd_time.sleep(1.5 * (attempt + 1))
+
+        err = str(last_error) if last_error else "Unknown error"
+        SelfDiagnostics.log(f"Load voices failed permanently: {err}")
+        self.after(
+            0,
+            lambda e=err: self.status_label.configure(
+                text=f"Ошибка загрузки голосов: {e}",
+                text_color="red"
+            )
+        )
+
+    @staticmethod
+    async def patched_generate_chunk_async(self, text, voice, output_file, index, total):
+        """
+        Безопасная генерация одного чанка с retry и автообновлением edge-tts.
+        """
+        last_error = None
+
+        for attempt in range(3):
+            try:
+                import edge_tts
+
+                try:
+                    communicate = edge_tts.Communicate(text=text, voice=voice)
+                except TypeError:
+                    communicate = edge_tts.Communicate(text, voice)
+
+                await communicate.save(output_file)
+
+                if not _sd_os.path.exists(output_file):
+                    raise RuntimeError("Файл не создан после generate.save()")
+
+                size = _sd_os.path.getsize(output_file)
+                if size <= 0:
+                    raise RuntimeError("Получен пустой аудиофайл")
+
+                self.after(
+                    0,
+                    lambda x=index: self._update_progress(
+                        x + 1,
+                        total,
+                        f"Генерация {x + 1}/{total}..."
+                    )
+                )
+
+                return
+
+            except Exception as e:
+                last_error = e
+                SelfDiagnostics.log(
+                    f"Chunk {index + 1}/{total} attempt {attempt + 1}/3 failed: {e}"
+                )
+
+                if attempt < 2 and SelfDiagnostics.should_update_edge_tts(str(e)):
+                    SelfDiagnostics.update_edge_tts_force()
+                elif attempt < 2:
+                    await _sd_asyncio.sleep(1.5 * (attempt + 1))
+
+        raise last_error
+
+    @staticmethod
+    def patched_install_ffmpeg_windows(self):
+        """
+        Улучшенная установка FFmpeg на Windows:
+        копирует ffmpeg.exe и ffprobe.exe, fallback в папку приложения.
+        """
+        import urllib.request as _url
+        import zipfile as _zip
+
+        try:
+            url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+            self._log("Скачивание FFmpeg...")
+            temp_dir = _sd_tempfile.mkdtemp()
+            zip_path = _sd_os.path.join(temp_dir, "ffmpeg.zip")
+
+            def progress_hook(block_num, block_size, total_size):
+                if total_size > 0:
+                    percent = min(100, block_num * block_size * 100 / total_size)
+                    self.after(
+                        0,
+                        lambda p=percent: self._update_progress(
+                            0.75 + (p / 100) * 0.2
+                        )
+                    )
+
+            _url.urlretrieve(url, zip_path, reporthook=progress_hook)
+
+            self._log("Распаковка FFmpeg...")
+            extract_dir = _sd_os.path.join(temp_dir, "ffmpeg_extracted")
+
+            with _zip.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            wanted = {"ffmpeg.exe", "ffprobe.exe"}
+            found = []
+
+            for root, dirs, files in _sd_os.walk(extract_dir):
+                for f in files:
+                    if f.lower() in wanted:
+                        found.append(_sd_os.path.join(root, f))
+
+            if not found:
+                self._log("  ✗ Не удалось найти ffmpeg.exe/ffprobe.exe в архиве")
+                _sd_shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
+            system_root = _sd_os.environ.get("SystemRoot", "C:\\Windows")
+            system_dir = _sd_os.path.join(system_root, "System32")
+
+            try:
+                app_dir = str(_sd_Path(_sd_sys.argv[0]).resolve().parent)
+            except Exception:
+                app_dir = str(_sd_Path.cwd())
+
+            destinations = [system_dir, app_dir]
+            installed = False
+
+            for dest_dir in destinations:
+                try:
+                    for exe_path in found:
+                        exe_name = _sd_os.path.basename(exe_path)
+                        dest_file = _sd_os.path.join(dest_dir, exe_name)
+                        _sd_shutil.copy2(exe_path, dest_file)
+
+                    if dest_dir == app_dir:
+                        path = _sd_os.environ.get("PATH", "")
+                        if app_dir not in path.split(_sd_os.pathsep):
+                            _sd_os.environ["PATH"] = app_dir + _sd_os.pathsep + path
+
+                    self._log(f"  ✓ FFmpeg установлен в {dest_dir}")
+                    installed = True
+                    break
+
+                except Exception as e:
+                    self._log(f"  ! Не удалось установить в {dest_dir}: {e}")
+
+            if not installed:
+                self._log("  ✗ FFmpeg не установлен автоматически.")
+                self._log("  Скачайте FFmpeg вручную: https://ffmpeg.org/download.html")
+
+            _sd_shutil.rmtree(temp_dir, ignore_errors=True)
+
+        except Exception as e:
+            self._log(f"  ✗ Ошибка установки FFmpeg: {e}")
+            SelfDiagnostics.log(f"FFmpeg install exception: {e}")
+            SelfDiagnostics.log(_sd_traceback.format_exc())
+            self._log("  Скачайте FFmpeg вручную с https://ffmpeg.org/download.html")
+
+
+# === SELF-DIAGNOSTICS PATCH END ===
 
 class DependencyInstaller(ctk.CTk):
     """Окно установки зависимостей"""
@@ -171,7 +925,7 @@ class DependencyInstaller(ctk.CTk):
             result = subprocess.run(
                 ['ffmpeg', '-version'],
                 capture_output=True,
-                timeout=5
+                timeout=5, **_hc_no_window_flags()
             )
             if result.returncode == 0:
                 self._log("  ✓ FFmpeg установлен")
@@ -220,7 +974,7 @@ class DependencyInstaller(ctk.CTk):
                             'pip',
                             'install',
                             package
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **_hc_no_window_flags())
                         self._log(f"  ✓ {package} установлен")
                     except Exception as e:
                         self._log(f"  ✗ Ошибка установки {package}: {e}")
@@ -499,7 +1253,7 @@ class VoiceGeneratorApp(ctk.CTk):
             result = subprocess.run(
                 ['ffmpeg', '-version'],
                 capture_output=True,
-                timeout=5
+                timeout=5, **_hc_no_window_flags()
             )
             if result.returncode == 0:
                 self.ffmpeg_available = True
@@ -595,7 +1349,7 @@ class VoiceGeneratorApp(ctk.CTk):
                 '-c', 'copy',
                 output_path
             ]
-            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+            subprocess.run(cmd, check=True, capture_output=True, timeout=60, **_hc_no_window_flags())
         finally:
             if os.path.exists(list_file):
                 try:
@@ -958,10 +1712,35 @@ class VoiceGeneratorApp(ctk.CTk):
                 pass
 
 
+def _apply_self_diagnostic_patches():
+    try:
+        if "VoiceGeneratorApp" in globals():
+            VoiceGeneratorApp._load_voices = SelfDiagnostics.patched_load_voices
+            VoiceGeneratorApp._generate_chunk_async = SelfDiagnostics.patched_generate_chunk_async
+
+        if "DependencyInstaller" in globals():
+            DependencyInstaller._install_ffmpeg_windows = SelfDiagnostics.patched_install_ffmpeg_windows
+
+        SelfDiagnostics.log("Runtime self-diagnostic patches applied.")
+    except Exception as e:
+        try:
+            SelfDiagnostics.log(f"Failed to apply runtime patches: {e}")
+        except Exception:
+            print(f"Failed to apply runtime patches: {e}")
+
+
 if __name__ == "__main__":
-    # Инициализация pygame
-    pygame.mixer.init()
-    
-    # Запускаем установщик зависимостей
+    try:
+        SelfDiagnostics.run_startup_diagnostics()
+    except Exception as e:
+        print(f"Startup diagnostics failed: {e}")
+
+    _apply_self_diagnostic_patches()
+
+    try:
+        pygame.mixer.init()
+    except Exception as e:
+        print(f"PyGame mixer init failed: {e}")
+
     installer = DependencyInstaller()
     installer.mainloop()
